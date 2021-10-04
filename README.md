@@ -6,6 +6,6 @@ The input data divided to samples, each samlpe has 1024 rows, that is, the data 
 There are 3 columns in each row: the X, Y, and Z axes of the accelerometer.
 
 # Part 2- gait identification
-This part is aimed to classify participant's as parkinson's disease patient or healthy control by their gait data, extracted in the previous code.
+This part is aimed to classify participants as parkinson's disease patients or healthy control by their gait data, extracted in the previous code.
 The input data divided to samples, each samlpe has 128 rows, that is, the data length in the time series is 128. 
 There are 3 columns in each row: the X, Y, and Z axes of the accelerometer.
