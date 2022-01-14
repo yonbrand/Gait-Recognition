@@ -1,0 +1,124 @@
+# This is a sample Python script.
+
+# Press Shift+F10 to execute it or replace it with your code.
+# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+
+import gait_segmentation
+import numpy as np
+import sys
+import pickle
+import torch
+import torch.optim as optim
+import os
+
+def process():
+        input_path = sys.argv[2]
+        alpha = float(sys.argv[3])
+        batch_size = int(sys.argv[4])
+
+        main_path = input_path
+        PD_path = main_path + '/PD'
+        HC_path = main_path + '/HC'
+
+        data_path_pd = PD_path + '/Data'
+        label_path_pd = PD_path + '/labels'
+
+        data_path_hc = HC_path + '/Data'
+        label_path_hc = HC_path + '/labels'
+
+        # read the data and labels- PD
+        data_pd = gait_segmentation.read_data(data_path_pd, alpha)
+        labels_pd, participants_pd = gait_segmentation.read_labels(label_path_pd, alpha)
+
+        # read the data and labels-HC
+        data_hc = gait_segmentation.read_data(data_path_hc, alpha)
+        labels_hc, participants_hc = gait_segmentation.read_labels(label_path_hc, alpha)
+
+        # concatenate pd and hc data&labels
+        all_data = np.concatenate((data_pd, data_hc), axis=0)
+        all_data.shape
+        all_labels = np.concatenate((labels_pd, labels_hc), axis=0)
+        all_labels.shape
+        all_participants = np.concatenate((participants_pd, participants_hc), axis=0)
+
+        batch_size = batch_size
+
+        train_dataloader_pd, test_dataloader_pd = gait_segmentation.data_processing(data_pd, labels_pd, batch_size)
+        train_dataloader_hc, test_dataloader_hc = gait_segmentation.data_processing(data_hc, labels_hc, batch_size)
+        train_dataloader_all, test_dataloader_all = gait_segmentation.data_processing(all_data, all_labels, batch_size)
+
+        file_version=sys.argv[5]
+        with open(PD_path + '/segmented_data/pd_train_loader_'+file_version+'.npy', 'wb') as f:
+            pickle.dump(train_dataloader_pd, f, protocol=4)
+        with open(PD_path + '/segmented_data/pd_test_loader_'+file_version+'.npy', 'wb') as f:
+                pickle.dump(test_dataloader_pd, f, protocol=4)
+        with open(HC_path + '/segmented_data/hc_train_loader_'+file_version+'.npy', 'wb') as f:
+            pickle.dump(train_dataloader_hc, f, protocol=4)
+        with open(HC_path + '/segmented_data/hc_test_loader_'+file_version+'.npy', 'wb') as f:
+            pickle.dump(test_dataloader_hc, f, protocol=4)
+        with open(main_path + "/all/segmented_data/all_train_loader_" + file_version + '.npy', 'wb') as f:
+                pickle.dump(train_dataloader_all, f, protocol=4)
+        with open(main_path + '/all/segmented_data/all_test_loader_'+file_version+'.npy', 'wb') as f:
+                pickle.dump(test_dataloader_all, f, protocol=4)
+
+def load_data(input_path, data_type, file_version):
+
+    if data_type == "PD":
+        train_loader = open(os.path.join(input_path +data_type+'/segmented_data/pd_train_loader_'+file_version+'.npy'), "rb")
+        train_loader = pickle.load(train_loader)
+        test_loader =  open(os.path.join(input_path +data_type+'/segmented_data/pd_test_loader_'+file_version+'.npy'), "rb")
+        test_loader = pickle.load(test_loader)
+    elif data_type == "HC":
+        train_loader = open(os.path.join(input_path +data_type+'/segmented_data/hc_train_loader_'+file_version+'.npy'), "rb")
+        train_loader = pickle.load(train_loader)
+        test_loader =  open(os.path.join(input_path +data_type+'/segmented_data/hc_test_loader_'+file_version+'.npy'), "rb")
+        test_loader = pickle.load(test_loader)
+
+    else:
+        data_type = "all"
+        train_loader = open( os.path.join(input_path +data_type+'/segmented_data/all_train_loader_'+file_version+'.npy'), "rb")
+        train_loader = pickle.load(train_loader)
+        test_loader =  open(os.path.join(input_path +data_type+'/segmented_data/all_test_loader_'+file_version+'.npy'), "rb")
+        test_loader = pickle.load(test_loader)
+    return train_loader,test_loader
+
+
+def main():
+
+    mode = sys.argv[1]
+
+    if mode == "process":
+        process()
+    elif mode == "models":
+        data_type = sys.argv[2]
+        file_version=sys.argv[3]
+        input_path = sys.argv[4]
+        train_loader, test_loader= load_data(input_path, data_type,file_version)
+        learning_rate = float(sys.argv[5])
+        num_steps = int(sys.argv[6])
+        wd = float(sys.argv[7])
+        net=sys.argv[8]
+        if net=="Network":
+            model= gait_segmentation.Network()
+        elif net=="BatchNorm":
+            model = gait_segmentation.NetworkBatchBorm()
+        else:
+            model=[]
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=wd)
+        model, loss,train_acc, validation_acc=gait_segmentation.train_model_loop(model, optimizer, num_steps, train_loader, test_loader)
+
+        with open(os.path.join(input_path+data_type+'/model/loss'+file_version+'.npy'), 'wb') as f:
+            pickle.dump(loss, f, protocol=4)
+        with open(os.path.join(input_path + data_type+ '/model/train_accuracy'+file_version+'.npy'), 'wb') as f:
+                pickle.dump(train_acc, f, protocol=4)
+        with open(os.path.join(input_path +data_type+ '/model/validation_accuracy'+file_version+'.npy'), 'wb') as f:
+            pickle.dump(validation_acc, f, protocol=4)
+        torch.save(model.state_dict(), os.path.join(input_path+ data_type+'/model/trained_model'+file_version+'.pt'))
+
+
+
+
+
+if __name__ == '__main__':
+    main()
+# See PyCharm help at https://www.jetbrains.com/help/pycharm/
