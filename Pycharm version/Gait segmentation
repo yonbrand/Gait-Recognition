@@ -1,1 +1,569 @@
 
+# ## Gait Segmentation 2
+# This code aims to take an acceleration raw data from daily-living, and extract the gait (walking) episodes during the recording period.
+# This code is based on the original paper code: https://github.com/qinnzou/Gait-Recognition-Using-Smartphones/blob/master/code/gait-extraction/tf_seg_new.ipynb
+#
+# Converted from TensorFlow to Pytorch
+#
+# Changes from 1 version: Unshuffling the data (train and test are on different participants), and using the new PD.mat dataset after Natalie update it
+
+
+import os
+import numpy as np
+import pandas as pd
+from numpy import genfromtxt
+import pickle
+import random
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import LeaveOneGroupOut
+from sklearn.model_selection import LeaveOneOut
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+from torch.utils.data import TensorDataset, DataLoader
+import scipy.io as sio
+
+cuda = True if torch.cuda.is_available() else False
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device
+
+
+# # Load the data
+
+# optional
+def read_data(data_path, alpha):
+    file_names = os.listdir(data_path)
+    all_data = np.empty((0, 1, 3, 512))
+    for ind in file_names:
+        curr_file = str(data_path + '/' + ind)
+        acc_dict = sio.loadmat(curr_file)
+        acc_np = acc_dict['acc']
+        data_np = acc_np[:int(np.floor(alpha * len(acc_np))),
+                  :]  # there is a plenty of data, which make it computationality demanding. Therefore we took (alpha)% of the data from each participant
+        n_counts = 512
+        data_n = data_np[
+                 0:((len(data_np) // n_counts) * n_counts)]  # remove part of the data for dividing without residual
+        sample_data = data_n.reshape((len(data_n) // n_counts), 1, 3,
+                                     n_counts)  # divide the data to samples in length of 512
+        all_data = np.append(all_data, sample_data, axis=0)
+    return all_data
+
+def read_labels(label_path, alpha):
+    file_names = os.listdir(label_path)
+    all_labels = np.empty((0, 512))
+    all_participants = np.empty((0, 512))
+    count = 1
+    for ind in file_names:
+        curr_file = str(label_path + '/' + ind)
+        labels_dict = sio.loadmat(curr_file)
+        if label_path == 'C:/Users/yonatanbra/Desktop/gait_detection_DL/PD/labels':
+            labels_np = labels_dict['labels']
+        elif label_path == 'C:/Users/yonatanbra/Desktop/gait_detection_DL/HC/labels':
+            labels_np = labels_dict['post_labels']
+        labels_np = labels_np[:int(np.floor(alpha * len(labels_np))), :]
+        labels_n = labels_np[0:((len(labels_np) // 512) * 512)]
+        sample_labels = labels_n.reshape((len(labels_n) // 512), 512)
+        all_labels = np.append(all_labels, sample_labels, axis=0)
+        participant_vec = np.full_like(sample_labels, count)
+        all_participants = np.append(all_participants, participant_vec, axis=0)
+        count += 1
+    return all_labels, all_participants
+
+## Create balanced dataset- optional (haven't used it)
+# read data and labels from each participants and balance it, such that the amount of gait episodes is similar to the number of non-gait episodes
+# def read_data_labels(label_path, data_path, alpha):
+#     label_files = os.listdir(label_path)
+#     all_labels = np.empty((0, 512))
+#     data_files = os.listdir(data_path)
+#     all_data = np.empty((0, 1, 3, 512))
+#     all_participants = np.empty((0, 512))
+#     count = 1
+#     for label_ind in label_files:
+#         curr_file = str(label_path + '/' + label_ind)
+#         labels_dict = sio.loadmat(curr_file)
+#         labels_np = labels_dict['labels']
+#         labels_np = labels_np[:int(np.floor(alpha * len(labels_np))), :]
+#         labels_n = labels_np[0:((len(labels_np) // 512) * 512)]
+#         sample_labels = labels_n.reshape((len(labels_n) // 512), 512)
+#         sorted_labels = np.sort(sample_labels, axis=0)  # sort windows accordings to their amount of gait
+#         gait_ratio = np.sum(sorted_labels) / len(sorted_labels.reshape(-1))  # ratio between gait to non-gait episodes
+#         gait_windows = sorted_labels[int(np.floor(len(sorted_labels) - (len(sorted_labels) * gait_ratio))):(
+#             np.size(sorted_labels, 0)), :]  # windows with the most existence of gait
+#         # sample similar number of non-gait windows from the remain data
+#         n = np.size(gait_windows, 0)  # number of sumples (equal to number of gait windows)
+#         index = np.random.choice((np.size(sorted_labels, 0) - np.size(gait_windows, 0)), n,
+#                                  replace=False)  # indices of the random samples
+#         nongait_windows = sorted_labels[index, :]
+#         balanced_labels = np.concatenate((nongait_windows, gait_windows), axis=0)
+#         all_labels = np.append(all_labels, balanced_labels, axis=0)
+#
+#         curr_data = str(data_path + '/' + data_files[count - 1])
+#         acc_dict = sio.loadmat(curr_data)  # read the mat acceleration files
+#         acc_np = acc_dict['acc']  # take only the acceleration array
+#         data_np = acc_np[:int(np.floor(alpha * len(acc_np))), :]  # choose how much data to feed the model
+#         n_counts = 512
+#         data_n = data_np[
+#                  0:((len(data_np) // n_counts) * n_counts)]  # remove part of the data for dividing without residual
+#         sample_data = data_n.reshape((len(data_n) // n_counts), 1, 3,
+#                                      n_counts)  # divide the data to samples in length of 512
+#         sorted_index = np.argsort(sample_labels, axis=0)[:, 0]
+#         sorted_data = sample_data[sorted_index, :, :, :]
+#         gait_data = sorted_data[
+#                     int(np.floor(len(sorted_labels) - (len(sorted_labels) * gait_ratio))):(np.size(sorted_labels, 0)),
+#                     :, :, :]
+#         nongait_data = sorted_data[index, :, :, :]
+#         balanced_data = np.concatenate((nongait_data, gait_data), axis=0)
+#         all_data = np.append(all_data, balanced_data, axis=0)
+#
+#         participant_vec = np.full_like(sample_labels, count)
+#         all_participants = np.append(all_participants, participant_vec, axis=0)
+#         count += 1
+#     return all_labels, all_data, all_participants
+#
+# main_path = 'C:/Users/yonatanbra/Desktop/gait_detection_DL'
+# PD_path=main_path+'/PD'
+# HC_path = main_path+'/HC'
+#
+# data_path_pd = PD_path + '/Data'
+# label_path_pd = PD_path + '/labels'
+#
+# data_path_hc = HC_path + '/Data'
+# label_path_hc = HC_path + '/labels'
+#
+# # read the data and labels- PD
+# data_pd = read_data(data_path_pd, 1)
+# labels_pd, participants_pd = read_labels(label_path_pd, 1)
+#
+# # read the data and labels-HC
+# data_hc = read_data(data_path_hc, 1)
+# labels_hc, participants_hc = read_labels(label_path_hc, 1)
+#
+# # concatenate pd and hc data&labels
+# all_data = np.concatenate((data_pd, data_hc), axis=0)
+# all_data.shape
+# all_labels = np.concatenate((labels_pd, labels_hc), axis=0)
+# all_labels.shape
+# all_participants=np.concatenate((participants_pd, participants_hc), axis=0)
+# Balanced labels and data- optional
+# labels,data,participants= read_data_labels(label_path,data_path,alpha=1)
+
+# optional- save the loaded data
+# with open(main_path + '/segmented_data/all_data_seg512.npy', 'wb') as f:
+#     pickle.dump(all_data, f, protocol=4)
+# # optional- save the loaded labels
+# with open(main_path + '/segmented_labels/all_labels512_seg.npy', 'wb') as f:
+#     pickle.dump(all_labels, f, protocol=4)
+#
+# # load the already segmented data
+# data_pickle = open(main_path + '/segmented_data/data_seg.npy', "rb")
+# data = pickle.load(data_pickle)
+#
+# # load the already segmented labels
+# labels_pickle = open(main_path + '/segmented_labels/labels_seg.npy', "rb")
+# labels = pickle.load(labels_pickle)
+
+def data_processing(data,labels, batch_size):
+    # split the data to train and test
+    X_train, X_test, y_train, y_test = train_test_split(data, labels, test_size=0.33,shuffle=False) #TODO:Change to True # we are not shuffling in this stage because we want the test and train sets will be from completely different participants
+    # shuffling windows- optional
+    train_randomlist = random.sample(range(X_train.shape[0]), X_train.shape[0])
+    test_randomlist = random.sample(range(X_test.shape[0]), X_test.shape[0])
+    X_train = X_train[train_randomlist, :, :, :]
+    y_train = y_train[train_randomlist, :]
+    X_test = X_test[test_randomlist, :, :, :]
+    y_test = y_test[test_randomlist, :]
+
+    tensor_x_train = torch.Tensor(X_train).float().to(device)  # transform to torch tensor
+    tensor_y_train = torch.Tensor(y_train).float().to(device)
+
+    train_dataset = TensorDataset(tensor_x_train, tensor_y_train)  # create your datset
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)  # create your dataloader
+
+    tensor_x_test = torch.Tensor(X_test).float().to(device)  # transform to torch tensor
+    tensor_y_test = torch.Tensor(y_test).float().to(device)
+
+    test_dataset = TensorDataset(tensor_x_test, tensor_y_test)  # create your datset
+    test_dataloader = DataLoader(test_dataset)  # create your dataloader
+
+    return train_dataloader, test_dataloader
+
+# ##  Network Architecture
+class Network(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.conv1_1 = nn.Conv2d(in_channels=1, out_channels=64, kernel_size=[1, 16])
+        self.conv1_2 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=[1, 16])
+
+        self.conv2_1 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=[1, 16])
+        self.conv2_2 = nn.Conv2d(in_channels=128, out_channels=128, kernel_size=[1, 16])
+
+        self.conv3_1 = nn.Conv2d(in_channels=128, out_channels=256, kernel_size=[1, 16])
+        self.conv3_2 = nn.Conv2d(in_channels=256, out_channels=256, kernel_size=[1, 16])
+
+        self.convTranspose1 = nn.ConvTranspose2d(256, 128, (1, 2), stride=(1, 2))
+        self.conv2_5 = nn.Conv2d(in_channels=256, out_channels=128, kernel_size=[1, 16])
+        self.conv2_6 = nn.Conv2d(in_channels=128, out_channels=128, kernel_size=[1, 16])
+
+        self.convTranspose2 = nn.ConvTranspose2d(128, 64, (1, 2), stride=(1, 2))
+        self.conv1_4 = nn.Conv2d(in_channels=128, out_channels=64, kernel_size=[1, 16])
+        self.conv1_4_2 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=[1, 16])
+        self.conv1_5 = nn.Conv2d(in_channels=64, out_channels=256, kernel_size=[3, 1])
+        self.conv1_6 = nn.Conv2d(in_channels=256, out_channels=1, kernel_size=1)
+
+    # define forward function
+    def forward(self, x):
+        pad_x = nn.ReflectionPad2d((7, 8, 0, 0))(x)
+
+        conv1_1 = F.relu(self.conv1_1(pad_x))
+        conv1_1 = nn.ReflectionPad2d((7, 8, 0, 0))(conv1_1)
+        conv1_2 = F.relu(self.conv1_2(conv1_1))
+
+        conv2_1 = nn.MaxPool2d(kernel_size=[1, 2], stride=[1, 2])(conv1_2)
+
+        conv2_1 = nn.ReflectionPad2d((7, 8, 0, 0))(conv2_1)
+        conv2_2 = F.relu(self.conv2_1(conv2_1))
+        conv2_2 = nn.ReflectionPad2d((7, 8, 0, 0))(conv2_2)
+        conv2_3 = F.relu(self.conv2_2(conv2_2))
+
+        conv3_1 = nn.MaxPool2d(kernel_size=[1, 2], stride=[1, 2])(conv2_3)
+
+        conv3_1 = nn.ReflectionPad2d((7, 8, 0, 0))(conv3_1)
+        conv3_2 = F.relu(self.conv3_1(conv3_1))
+        conv3_2 = nn.ReflectionPad2d((7, 8, 0, 0))(conv3_2)
+        conv3_3 = F.relu(self.conv3_2(conv3_2))
+        conv3_3 = nn.ReflectionPad2d((7, 8, 0, 0))(conv3_3)
+        conv3_4 = F.relu(self.conv3_2(conv3_3))
+
+        conv2_4_1 = self.convTranspose1(conv3_4)
+        conv2_4 = torch.cat((conv2_4_1, conv2_3), 1)
+        conv2_4 = nn.ReflectionPad2d((7, 8, 0, 0))(conv2_4)
+        conv2_5 = F.relu(self.conv2_5(conv2_4))
+        conv2_5 = nn.ReflectionPad2d((7, 8, 0, 0))(conv2_5)
+        conv2_6 = F.relu(self.conv2_6(conv2_5))
+
+        conv1_3_1 = self.convTranspose2(conv2_6)
+        conv1_3 = torch.cat((conv1_2, conv1_3_1), 1)
+        conv1_3 = nn.ReflectionPad2d((7, 8, 0, 0))(conv1_3)
+        conv1_4 = F.relu(self.conv1_4(conv1_3))
+        conv1_4 = nn.ReflectionPad2d((7, 8, 0, 0))(conv1_4)
+        conv1_4 = F.relu(self.conv1_4_2(conv1_4))
+        conv1_5 = F.relu(self.conv1_5(conv1_4))
+        conv1_6 = torch.sigmoid(self.conv1_6(conv1_5))
+
+        out = torch.reshape(conv1_6, (-1, 512))
+
+        return out
+
+    def getClass(self):
+        return self
+
+def train_model_loop(model, optimizer, num_steps, train_dataloader, test_dataloader):
+    all_train_loss = []
+    # all_test_loss = []
+    train_acc = []
+    validation_acc = []
+
+    for epoch in range(num_steps):
+        model.train()
+        train_preds = torch.empty((0,512))
+        for batch_idx, (data, labels) in enumerate(train_dataloader):
+            preds = model(data)
+            # train_preds=torch.cat((train_preds,preds),dim=0)
+            imbalance_factor = torch.floor(len(labels.reshape(-1)) / torch.sum(labels.reshape(-1)))
+            class_weights = torch.ones_like(labels) / imbalance_factor + (1.0 - 1.0 / imbalance_factor) * labels
+            loss = torch.nn.functional.binary_cross_entropy(preds, labels, class_weights)
+            # loss = my_loss(labels, preds)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            bach_loss = loss.item()
+
+            if batch_idx % 100 == 0:
+                print('[%d, %5d] loss: %.3f' % (epoch, batch_idx, bach_loss))
+
+        all_train_loss.append(float(bach_loss))
+        model.eval()
+        print("epoch %d,  train loss : %.3f,"  %(epoch, bach_loss))
+        train_acc.append(check_acc(model, train_dataloader))
+        validation_acc.append(check_acc(model, test_dataloader))
+    return model, all_train_loss,train_acc, validation_acc
+
+def my_loss(y_, output_map):
+    t0 = y_ * torch.log(torch.clamp(output_map, 1e-10, 1.0))
+    t1 = (1 - y_) * torch.log(torch.clamp(1 - output_map, 1e-10, 1.0))
+    return -torch.mean(t0 + t1)
+    # return -torch.mean( y_*torch.log(torch.clamp(output_map,1e-10,1.0)) +(1-y_)*torch.log(torch.clamp(1-output_map,1e-10,1.0)))
+
+def check_acc(model, loader):
+    correct = 0
+    total = 0
+    TP = 0
+    TN = 0
+    FP = 0
+    FN = 0
+    with torch.no_grad():
+        for data in loader:
+            features, labels = data
+            # if len(outputs) == 0:
+            outputs = model(features)
+            predicted = torch.round(outputs)
+            total += (labels.size(0) * labels.size(1))
+            correct += torch.sum(predicted == labels)
+            TP += torch.sum(((predicted == labels) & (labels == 1)))
+            TN += torch.sum(((predicted == labels) & (labels == 0)))
+            FP += torch.sum(((predicted != labels) & (labels == 0)))
+            FN += torch.sum(((predicted != labels) & (labels == 1)))
+    acc = (100 * correct / total)
+    precision = 100 * ((1+TP) / (1 + TP + FP))
+    sensitivity = 100 * ((1+TP) / (1 + TP + FN))
+    specificity = 100 * ((1+TN) / (1 + TN + FP))
+    if loader == 'train_dataloader':
+        print('Accuracy on the training set is : %.3f %%' % acc)
+    elif loader == 'test_dataloader':
+        print('Accuracy on the validation set is: %.3f %%' % acc)
+
+    return [acc, precision, sensitivity, specificity]
+# Training Parameters
+# learning_rate = 0.00001
+# num_steps = 5
+# batch_size = 64
+# # display_step = 1
+#
+#
+#
+# # load a pre-trained model- optional
+# model = Network().to(device)  # NetworkBatchBorm().to(device)
+# model.load_state_dict(torch.load(
+#     main_path + '/gait_segmentation_moreIter.pt'))  # load the corresponding model: gait_segmentation.pt/gait_segmentation_batch64.pt/gait_segmentation_batchNorm.pt
+# model.to(device)
+#
+# ### PD classifier
+#
+# # process the data
+# train_dataloader_pd, test_dataloader_pd=data_processing(data_pd,labels_pd, batch_size)
+#
+# model = Network().to(device)
+# wd=1e-5 #optional
+# optimizer = optim.Adam(model.parameters(), lr=learning_rate,weight_decay=wd)
+#
+# ## train the model
+# model_pd, loss_pd,train_acc_pd, validation_acc_pd=train_model_loop(model, optimizer, num_steps, train_dataloader_pd, test_dataloader_pd)
+# torch.save(model_pd.state_dict(), PD_path + '/gait_segmentation_pd.pt')  # saving the trained model
+#
+# # save & load the performance metrics
+# with open(PD_path + '/train_acc.npy', 'wb') as f:
+#     pickle.dump(train_acc_pd, f, protocol=4)
+# with open(PD_path + '/validation_acc.npy', 'wb') as f:
+#     pickle.dump(validation_acc_pd, f, protocol=4)
+#
+# train_acc_pickle = open(main_path + "/train_acc.npy", "rb")
+# train_acc = pickle.load(train_acc_pickle)
+# validation_acc_pickle = open(main_path + "/validation_acc.npy", "rb")
+# validation_acc = pickle.load(validation_acc_pickle)
+#
+# ## visualization
+# import matplotlib.pyplot as plt
+# plt.plot(range(num_steps), np.array(train_acc)[:, 0], color='blue', label='Training Accuracy')
+# plt.plot(range(num_steps), np.array(validation_acc)[:, 0], color='red', label='Validation Accuracy')
+# plt.title('Accuracy over epochs')
+# plt.xlabel('num_epochs')
+# plt.ylabel('accuracy')
+# plt.legend()
+#
+# plt.plot(loss_pd)
+# plt.title('Loss over epochs')
+# plt.xlabel('epochs')
+# plt.ylabel('loss')
+#
+# # # Batch size set to 128
+#
+# # change the batch size
+# batch_size = 128
+#
+# # optional: initiate model (for case that the already trained model is not fit to the specific case)
+# model = Network().to(device)
+# optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+#
+# #change the batch size in the dataset
+# train_dataloader_pd128, test_dataloader_pd128=data_processing(data,labels, batch_size)
+# train_model_loop(model, optimizer, num_steps, train_dataloader_pd128, test_dataloader_pd128)
+# torch.save(model.state_dict(), PD_path + '/gait_segmentation_batch128.pt')  # saving the trained model
+
+# # Batch Normalization
+class NetworkBatchBorm(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.conv1_1 = nn.Conv2d(in_channels=1, out_channels=64, kernel_size=[1, 16])
+        self.conv1_2 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=[1, 16])
+
+        self.batchNormconv1 = nn.BatchNorm2d(64)
+
+        self.conv2_1 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=[1, 16])
+        self.conv2_2 = nn.Conv2d(in_channels=128, out_channels=128, kernel_size=[1, 16])
+
+        self.batchNormconv2 = nn.BatchNorm2d(128)
+
+        self.conv3_1 = nn.Conv2d(in_channels=128, out_channels=256, kernel_size=[1, 16])
+        self.conv3_2 = nn.Conv2d(in_channels=256, out_channels=256, kernel_size=[1, 16])
+
+        self.batchNormconv3 = nn.BatchNorm2d(256)
+
+        self.convTranspose1 = nn.ConvTranspose2d(256, 128, (1, 2), stride=(1, 2))
+        self.conv2_5 = nn.Conv2d(in_channels=256, out_channels=128, kernel_size=[1, 16])
+        self.conv2_6 = nn.Conv2d(in_channels=128, out_channels=128, kernel_size=[1, 16])
+
+        self.convTranspose2 = nn.ConvTranspose2d(128, 64, (1, 2), stride=(1, 2))
+        self.conv1_4 = nn.Conv2d(in_channels=128, out_channels=64, kernel_size=[1, 16])
+        self.conv1_4_2 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=[1, 16])
+        self.conv1_5 = nn.Conv2d(in_channels=64, out_channels=256, kernel_size=[3, 1])
+        self.conv1_6 = nn.Conv2d(in_channels=256, out_channels=1, kernel_size=1)
+
+    # define forward function
+    def forward(self, x):
+        pad_x = nn.ReflectionPad2d((7, 8, 0, 0))(x)
+
+        conv1_1 = F.relu(self.conv1_1(pad_x))
+        conv1_1 = nn.ReflectionPad2d((7, 8, 0, 0))(conv1_1)
+        conv1_1 = self.batchNormconv1(conv1_1)
+        conv1_2 = F.relu(self.conv1_2(conv1_1))
+
+        conv2_1 = nn.MaxPool2d(kernel_size=[1, 2], stride=[1, 2])(conv1_2)
+
+        conv2_1 = nn.ReflectionPad2d((7, 8, 0, 0))(conv2_1)
+        conv2_2 = F.relu(self.conv2_1(conv2_1))
+        conv2_2 = nn.ReflectionPad2d((7, 8, 0, 0))(conv2_2)
+        conv2_2 = self.batchNormconv2(conv2_2)
+        conv2_3 = F.relu(self.conv2_2(conv2_2))
+
+        conv3_1 = nn.MaxPool2d(kernel_size=[1, 2], stride=[1, 2])(conv2_3)
+
+        conv3_1 = nn.ReflectionPad2d((7, 8, 0, 0))(conv3_1)
+        conv3_2 = F.relu(self.conv3_1(conv3_1))
+        conv3_2 = nn.ReflectionPad2d((7, 8, 0, 0))(conv3_2)
+        conv3_2 = self.batchNormconv3(conv3_2)
+        conv3_3 = F.relu(self.conv3_2(conv3_2))
+        conv3_3 = nn.ReflectionPad2d((7, 8, 0, 0))(conv3_3)
+        conv3_4 = F.relu(self.conv3_2(conv3_3))
+
+        conv2_4_1 = self.convTranspose1(conv3_4)
+        conv2_4 = torch.cat((conv2_4_1, conv2_3), 1)
+        conv2_4 = nn.ReflectionPad2d((7, 8, 0, 0))(conv2_4)
+        conv2_5 = F.relu(self.conv2_5(conv2_4))
+        conv2_5 = nn.ReflectionPad2d((7, 8, 0, 0))(conv2_5)
+        conv2_6 = F.relu(self.conv2_6(conv2_5))
+
+        conv1_3_1 = self.convTranspose2(conv2_6)
+        conv1_3 = torch.cat((conv1_2, conv1_3_1), 1)
+        conv1_3 = nn.ReflectionPad2d((7, 8, 0, 0))(conv1_3)
+        conv1_4 = F.relu(self.conv1_4(conv1_3))
+        conv1_4 = nn.ReflectionPad2d((7, 8, 0, 0))(conv1_4)
+        conv1_4 = F.relu(self.conv1_4_2(conv1_4))
+        conv1_5 = F.relu(self.conv1_5(conv1_4))
+        conv1_6 = torch.sigmoid(self.conv1_6(conv1_5))
+
+        out = torch.reshape(conv1_6, (-1, 512))
+
+        return out
+#
+# model = NetworkBatchBorm().to(device)
+# optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
+#
+# train_model_loop(model, optimizer, num_steps, train_dataloader_pd128, test_dataloader_pd128)
+# torch.save(model.state_dict(), main_path + '/gait_segmentation_batchNorm.pt')  # saving the trained model
+#
+#
+# # # Healthy Control
+#
+# # process the data
+# train_dataloader_hc, test_dataloader_hc=data_processing(data_hc,labels_hc, batch_size)
+#
+# model = Network().to(device) #NetworkBatchBorm().to(device)
+# optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=wd)
+#
+# train_model_loop(model,optimizer,num_steps,train_dataloader_hc,test_dataloader_hc)
+# torch.save(model.state_dict(), HC_path + '/gait_segmentation_hc.pt')  # saving the trained model
+#
+#
+# # #  PD+HC
+#
+# # process the data
+# train_dataloader_all, test_dataloader_all=data_processing(all_data,all_labels, batch_size)
+#
+# model = NetworkBatchBorm().to(device) #Network().to(device)
+# optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
+#
+# train_model_loop(model,optimizer,num_steps,train_dataloader_all,test_dataloader_all)
+#
+# # #  Evaluating model
+#
+# # load one of the models
+# model = Network().to(device)  # NetworkBatchBorm().to(device)
+# model.load_state_dict(torch.load(
+#     main_path + '/gait_segmentation_moreIter.pt'))  # load the corresponding model: gait_segmentation.pt/gait_segmentation_batch64.pt/gait_segmentation_batchNorm.pt
+# model.to(device)
+#
+#
+# # data transformation for evaluation
+# tensor_x_pd = torch.Tensor(data).float().to(device)  # transform to torch tensor
+# tensor_y_pd = torch.Tensor(labels).float().to(device)
+#
+# pd_dataset = TensorDataset(tensor_x_pd, tensor_y_pd)  # create your datset
+# pd_dataloader = DataLoader(pd_dataset, batch_size=1, shuffle=False)  # create your dataloader
+#
+# # In[58]:
+#
+#
+# # pd_preds=torch.empty(512).to(device)
+# y_pred_list = []
+# model.eval()
+# with torch.no_grad():
+#     for batch_idx, (data, labels) in enumerate(pd_dataloader):
+#         outputs = model(data).to(device)
+#         preds = torch.round(outputs)
+#         # pd_preds=torch.cat((pd_preds,preds.view(-1)),dim=0)
+#         y_pred_list.append(preds.cpu().numpy())
+#
+#         if batch_idx % 10000 == 0 or batch_idx == (len(tensor_x_pd) - 1):
+#             with open(main_path + '/preds/preds_n' + str(batch_idx) + '.npy', 'wb') as f:
+#                 pickle.dump(y_pred_list, f, protocol=4)
+#                 # pd_preds=torch.empty(512).to(device)
+#             print("pd_preds:" + str(len(y_pred_list)) + "batch_id: " + str(batch_idx))
+#
+#
+# # find the start and end points of each subject
+# start_points = []
+# end_points = []
+# subjects = all_participants.reshape(-1)
+# end_points = [i for i, x in enumerate(np.diff(subjects) == 1) if x]
+# start_points = [x + 1 for x in end_points]
+# start_points.insert(0, 0)
+# end_points.append(len(subjects))
+# start_stop = list(zip(start_points, end_points))
+# start_stop
+#
+# # In[325]:
+#
+#
+# raw_data = data.reshape(len(subjects), 3)
+# all_labels = labels.reshape(-1)
+#
+# # In[331]:
+#
+#
+# import matplotlib.pyplot as plt
+#
+# plt.figure(figsize=(20, 6))
+# plt.plot(raw_data[1:10000, :])
+# plt.plot(labels[1:10000])
+# plt.show()
+#
+# # statistics
+# TP = np.sum((all_labels == np.asarray(y_pred_list).reshape(-1)) & (all_labels == 1))
+# TN = np.sum((all_labels == np.asarray(y_pred_list).reshape(-1)) & (all_labels == 0))
+# FP = np.sum((all_labels != np.asarray(y_pred_list).reshape(-1)) & (all_labels == 0))
+# FN = np.sum((all_labels != np.asarray(y_pred_list).reshape(-1)) & (all_labels == 1))
+#
