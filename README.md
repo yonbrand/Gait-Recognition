@@ -1,4 +1,6 @@
-# Gait (walking)-identification
+# Gait segmentaion and identification
+This project is based on this work:
+Zou Q, Wang Y, Zhao Y, Wang Q and Li Q, Deep learning-based gait recogntion using smartphones in the wild, IEEE Transactions on Information Forensics and Security, vol. 15, no. 1, pp. 3197-3212, 2020.
 
 # Part 1- gait segmentation
 This part of the code is used to do gait-extraction training, the dataset used in the code is not available due to patient's privacy.
