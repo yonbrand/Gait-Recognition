@@ -1,0 +1,25 @@
+legend:accuracy, precision, recall, specificity
+
+Train results: 
+[[tensor(80.6530), tensor(22.9627), tensor(90.9710), tensor(79.9761)],
+ [tensor(79.8561), tensor(22.8996), tensor(95.9780), tensor(78.7983)],
+ [tensor(82.7583), tensor(25.6637), tensor(94.9262), tensor(81.9599)],
+ [tensor(81.7578), tensor(24.7427), tensor(96.1423), tensor(80.8140)],
+ [tensor(84.5680), tensor(27.7925), tensor(94.2620), tensor(83.9320)],
+ [tensor(87.0359), tensor(31.2014), tensor(91.7509), tensor(86.7265)],
+ [tensor(84.2585), tensor(27.5000), tensor(95.1303), tensor(83.5452)],
+ [tensor(86.5653), tensor(30.5910), tensor(93.1498), tensor(86.1333)],
+ [tensor(86.0194), tensor(29.8465), tensor(94.0901), tensor(85.4899)],
+ [tensor(86.7189), tensor(30.9096), tensor(93.6708), tensor(86.2628)]]
+
+Validation results:
+[[tensor(81.8104), tensor(25.4454), tensor(90.9496), tensor(81.1644)],
+ [tensor(81.5444), tensor(25.8247), tensor(95.9050), tensor(80.5294)],
+ [tensor(84.1251), tensor(28.7337), tensor(94.8965), tensor(83.3637)],
+ [tensor(83.1727), tensor(27.6377), tensor(95.7176), tensor(82.2860)],
+ [tensor(86.1323), tensor(31.5141), tensor(93.8162), tensor(85.5892)],
+ [tensor(88.0605), tensor(34.7150), tensor(91.8196), tensor(87.7948)],
+ [tensor(86.0742), tensor(31.5207), tensor(94.6198), tensor(85.4702)],
+ [tensor(88.6271), tensor(35.8839), tensor(91.8616), tensor(88.3985)],
+ [tensor(87.6204), tensor(34.0215), tensor(93.1775), tensor(87.2276)],
+ [tensor(87.7426), tensor(34.2540), tensor(93.1850), tensor(87.3579)]]
