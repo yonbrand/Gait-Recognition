@@ -1,0 +1,10 @@
+This folder includes more elegant version of the DL code for gait segmentation (not identifcation).
+The 'gait segmentaion' code includes the functions that are needed for running the pipeline.
+The main file use to run the pieline and has 2 configurations:
+1. Process: read the acceleration mat files and process the data to fit the NN (UNet). 
+Input: acceleration samples and corresponded labels in mat format.
+Output: train and test dataloaders for training the model with pytorch.
+
+2. Models: train the model.
+Input: The output of the 'process' step.
+Output: saved model, loss, train and validation accuracy (save the results for each epoch)
