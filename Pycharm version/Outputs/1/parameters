@@ -1,0 +1,2 @@
+1. Process: config="process", path="C:/Users/yonatanbra/Desktop/gait_detection_DL", alpha=1, batch_size=64, file version=1
+2.Models: config="models", cohort(PD/HC/all)="alL",  file version=1 ,path="C:/Users/yonatanbra/Desktop/gait_detection_DL/", lr=0.00001, epoch=10, weight_decay=0, network_architecture: Network
